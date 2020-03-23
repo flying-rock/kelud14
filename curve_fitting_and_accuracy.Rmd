@@ -1,0 +1,171 @@
+---
+title: "Fragility curve fitting tool"
+author: "George Williams"
+date: "21/03/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Step 1: Load libraries and your raw data into R's memory 
+
+```{r}
+### you will need to install these packages it if you haven't before by running this line: install.packages('library_name') 
+library(readxl)
+library(tidyverse)
+library(ordinal) # needed for clm() function
+library(reshape) # needed for the melt() function
+
+### set your working directory to a folder containing your data with setwd() 
+setwd("/Users/george/Documents/PhD")
+# find out what directory you are currently in with "getwd()"
+
+# Kelud 2014 building damage data
+raw_data <- read.csv("https://raw.githubusercontent.com/flying-rock/kelud14/master/assessed_damage.csv")
+
+### rename one of the two hazard intensity columns to 'him' 
+# note that R is case sensitive
+data <- raw_data %>%
+  dplyr::rename(him = "load_inv") # inversion
+
+data$loghim <- log(data$him) # Add a log of him column to your data for curve fitting
+data$ds <- as.ordered(data$ds) # turn ds variable into an ordered factor for CLM 
+
+
+#filter in buildings of different typologies
+data.tile <- data %>%
+  dplyr::filter(pre == 1 | pre == 0)
+
+data.grey <- data %>%
+  dplyr::filter(pre == 2)
+```
+
+# Fit curves using cumulative link models (CLM) 
+# make a data.frame for the grey an tiled roofs with using inversion hazard
+```{r}
+him_plot <- seq(0.1,600,length=100)
+
+clmmod.t <- clm(ds ~ loghim, data=data.tile, link="probit")
+clmmod.g <- clm(ds ~ loghim, data=data.grey, link="probit")
+
+clmpred.t <- predict(clmmod.t,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+clmpred.g <- predict(clmmod.g,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+
+pred.g <- (1-clmpred.g$cprob2[,2:4])
+plot_data0.g <- data.frame(him=him_plot,pred.g)
+plot_data1.g <- melt(plot_data0.g,id="him",variable = "ds")
+plot_data1.g$type <- paste("grey")
+
+pred.t <- (1-clmpred.t$cprob2[,2:4])
+plot_data0.t <- data.frame(him=him_plot,pred.t)
+plot_data1.t <- melt(plot_data0.t,id="him",variable = "ds")
+plot_data1.t$type <- paste("tile")
+
+inv.frame <- data.frame(plot_data1.g,plot_data1.t)
+inv.frame1 <- inv.frame %>% 
+  dplyr::rename(him.g = "him",ds.g = "ds", value.g = "value",
+                him.t = "him.1", ds.t = "ds.1", value.t = "value.1")
+
+
+```
+
+
+# make a data.frame for the grey an tiled roofs with using interpolated hazard
+```{r}
+# Kelud 2014 building damage data
+raw_data.int <- read.csv("/Users/george/Documents/PhD/Manuscripts/KeludImpacts/Supplement/assessed_damage.csv",header=T, sep=",")
+
+data <- raw_data.int %>%
+  dplyr::rename(him = "load_int") # interpolation
+
+data$loghim <- log(data$him) # Add a log of him column to your data for curve fitting
+data$ds <- as.ordered(data$ds) # turn ds variable into an ordered factor for CLM 
+
+#filter in buildings of different typologies
+data.tile <- data %>%
+  dplyr::filter(pre == 1 | pre == 0)
+
+data.grey <- data %>%
+  dplyr::filter(pre == 2)
+
+him_plot <- seq(0.1,600,length=100)
+
+clmmod.t <- clm(ds ~ loghim, data=data.tile, link="probit")
+clmmod.g <- clm(ds ~ loghim, data=data.grey, link="probit")
+
+clmpred.t <- predict(clmmod.t,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+clmpred.g <- predict(clmmod.g,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+
+pred.g <- (1-clmpred.g$cprob2[,2:4])
+plot_data0.g <- data.frame(him=him_plot,pred.g)
+plot_data1.g <- melt(plot_data0.g,id="him",variable = "ds")
+plot_data1.g$type <- paste("grey")
+
+pred.t <- (1-clmpred.t$cprob2[,2:4])
+plot_data0.t <- data.frame(him=him_plot,pred.t)
+plot_data1.t <- melt(plot_data0.t,id="him",variable = "ds")
+plot_data1.t$type <- paste("tile")
+
+int.frame <- data.frame(plot_data1.g,plot_data1.t)
+int.frame1 <- int.frame %>% 
+  dplyr::rename(him.g = "him",ds.g = "ds", value.g = "value",
+                him.t = "him.1", ds.t = "ds.1", value.t = "value.1")
+```
+
+#combine the two data.frames and visulaise the fragility curves
+```{r}
+int.inv <- data.frame(int.frame1,inv.frame1) # combine the two dataframes
+
+FCall <-   ggplot(int.inv)+
+  geom_line(aes(x=him.t, y=value.g, colour=ds.t, linetype=type), alpha =0.3)+
+  geom_line(aes(x=him.t, y=value.t, colour=ds.t, linetype=type))+
+  geom_line(aes(x=him.t, y=value.t.1, colour=ds.t, linetype=type.1))+ #inv tile
+  geom_line(aes(x=him.t, y=value.g.1, colour=ds.t, linetype=type.1), alpha =0.3)+ #inv grey
+  ylim(0,1)+
+  labs(x = expression(paste('Loading (kg ',m^-2,')')), 
+       y = expression(paste('P(damage \u2265 DS)')))+
+  theme_bw()+
+  scale_colour_manual(name="Damage",
+                      values = c("X1"="blue",
+                                   "X2"="orange",
+                                   "X3"="red"),
+                        labels = c("X1"="DS1",
+                                   "X2"="DS2",
+                                   "X3"= "DS3"))+
+  scale_linetype_manual(name = "Model",
+                        values = c("grey"=4,
+                                   "tile"=1),
+                        labels = c("grey"="Interpolation",
+                                   "tile"="Inverison"))
+FCall
+
+data.int <- raw_data.int %>%
+  dplyr::rename(him = "load_int") # interpolation
+
+data.inv <- raw_data.int %>%
+  dplyr::rename(him = "load_inv") # interpolation
+
+int <- ggplot(data.int)+
+  geom_density(aes(x = him),colour='grey',fill='grey')+
+  xlab("Loading (kg/m2)")+
+  ylab("Count")+
+  xlim(0,600)+
+  theme_void()
+
+inv <- ggplot(data.inv)+
+  geom_density(aes(x = him),colour='grey',fill='grey')+
+  xlab("Loading (kg/m2)")+
+  ylab("Count")+
+  xlim(0,600)+
+  theme_void()
+
+cowplot::plot_grid(int,inv,FCall,nrow = 3, align = 'v', axis = 'lr', rel_heights = c(1,1,10))
+
+```
+
+# calculate prediction accuracy of curves
+```{r}
+
+```
