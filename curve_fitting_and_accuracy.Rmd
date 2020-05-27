@@ -1,0 +1,341 @@
+---
+title: "Fragility curve fitting and accuracy"
+author: "George Williams"
+date: "21/03/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 1: Load libraries and your raw data into R's memory and prepare data for curve fitting
+```{r}
+### you will need to install these packages it if you haven't before by running this line (remove the # symbol) 
+
+#install.packages(c("ggplot2","tidyverse","readxl","ordinal","reshape","cowplot"),dependencies=TRUE)
+library(readxl)
+library(tidyverse)
+library(ordinal) # needed for clm() 
+library(reshape) # needed for the melt() 
+library(cowplot) #needed for plotgrid()
+
+### set your working directory to a folder containing your data with setwd() 
+#setwd("/Users/george/Documents/PhD")
+# find out what directory you are currently in with "getwd()"
+
+# Kelud 2014 building damage data
+raw_data <- read.csv("https://raw.githubusercontent.com/flying-rock/kelud14/master/assessed_damage.csv")
+
+### rename one of the two hazard intensity columns to 'him', which stands for hazard intensity metric
+# note that R is case sensitive
+data <- raw_data %>%
+  dplyr::rename(him = "load_inv") # first we will fit curves using the hazard intensities derived from inversion
+
+data$loghim <- log(data$him) # Add a log of him column to your data for curve fitting
+data$ds <- as.ordered(data$ds) # turn ds variable into an ordered factor for CLM 
+
+
+#filter in buildings and assign them to their typologies
+data.tile <- data %>%
+  dplyr::filter(pre == 1 | pre == 0)
+
+data.grey <- data %>%
+  dplyr::filter(pre == 2)
+```
+
+# Part 2: Fit curves using cumulative link models (CLM) 
+# make a data frame for the grey an tiled roofs using inversion hazard
+```{r}
+# fit fragility curves to the data using a CLM with a probit link function 
+clmmod.t <- clm(ds ~ loghim, data=data.tile, link="probit") 
+clmmod.g <- clm(ds ~ loghim, data=data.grey, link="probit")
+
+him_plot <- seq(0.1,600,length=100) # create a sequence of numbers to feed into the model for plotting
+
+# don't forget to take the log of these numbers prior to inputting them into the CLM
+clmpred.t <- predict(clmmod.t,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+clmpred.g <- predict(clmmod.g,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+
+# prepare dataframes of the predictions for plotting
+# note that the following has been hardcoded to only work in cases where there are three damage states being predicted
+pred.g <- (1-clmpred.g$cprob2[,2:4])
+plot_data0.g <- data.frame(him=him_plot,pred.g)
+plot_data1.g <- melt(plot_data0.g,id="him",variable = "ds")
+plot_data1.g$type <- paste("grey")
+
+pred.t <- (1-clmpred.t$cprob2[,2:4])
+plot_data0.t <- data.frame(him=him_plot,pred.t)
+plot_data1.t <- melt(plot_data0.t,id="him",variable = "ds")
+plot_data1.t$type <- paste("tile")
+
+inv.frame <- data.frame(plot_data1.g,plot_data1.t)
+inv.frame1 <- inv.frame %>% 
+  dplyr::rename(him.g = "him",ds.g = "ds", value.g = "value",
+                him.t = "him.1", ds.t = "ds.1", value.t = "value.1")
+
+
+```
+
+# make a data frame for the grey an tiled roofs using interpolated hazard
+```{r}
+raw_data.int <- raw_data
+
+data <- raw_data.int %>%
+  dplyr::rename(him = "load_int") # interpolation
+
+data$loghim <- log(data$him) # Add a log of him column to your data for curve fitting
+data$ds <- as.ordered(data$ds) # turn ds variable into an ordered factor for CLM 
+
+#filter in buildings of different typologies
+data.tile <- data %>%
+  dplyr::filter(pre == 1 | pre == 0)
+
+data.grey <- data %>%
+  dplyr::filter(pre == 2)
+
+him_plot <- seq(0.1,600,length=100)
+
+clmmod.t <- clm(ds ~ loghim, data=data.tile, link="probit")
+clmmod.g <- clm(ds ~ loghim, data=data.grey, link="probit")
+
+clmpred.t <- predict(clmmod.t,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+clmpred.g <- predict(clmmod.g,newdata=data.frame(loghim=log(him_plot)), type = "cum.prob")
+
+pred.g <- (1-clmpred.g$cprob2[,2:4])
+plot_data0.g <- data.frame(him=him_plot,pred.g)
+plot_data1.g <- melt(plot_data0.g,id="him",variable = "ds")
+plot_data1.g$type <- paste("grey")
+
+pred.t <- (1-clmpred.t$cprob2[,2:4])
+plot_data0.t <- data.frame(him=him_plot,pred.t)
+plot_data1.t <- melt(plot_data0.t,id="him",variable = "ds")
+plot_data1.t$type <- paste("tile")
+
+int.frame <- data.frame(plot_data1.g,plot_data1.t)
+int.frame1 <- int.frame %>% 
+  dplyr::rename(him.g = "him",ds.g = "ds", value.g = "value",
+                him.t = "him.1", ds.t = "ds.1", value.t = "value.1")
+```
+
+# Part 3: Combine the two data frames and visulaise the fragility curves
+```{r}
+int.inv <- data.frame(int.frame1,inv.frame1) # combine the two dataframes
+
+# create a fragility curve plot whose x-axis is the same length as "him_plot"
+FCall <-   ggplot(int.inv)+
+  geom_line(aes(x=him.t, y=value.g, colour=ds.t, linetype=type), alpha =0.3)+
+  geom_line(aes(x=him.t, y=value.t, colour=ds.t, linetype=type))+
+  geom_line(aes(x=him.t, y=value.t.1, colour=ds.t, linetype=type.1))+ #inv tile
+  geom_line(aes(x=him.t, y=value.g.1, colour=ds.t, linetype=type.1), alpha =0.3)+ #inv grey
+  ylim(0,1)+
+  labs(x = expression(paste('Loading (kg ',m^-2,')')), 
+       y = expression(paste('P(damage \u2265 DS)')))+
+  theme_bw()+
+  scale_colour_manual(name="Damage",
+                      values = c("X1"="blue",
+                                   "X2"="orange",
+                                   "X3"="red"),
+                        labels = c("X1"="DS2",
+                                   "X2"="DS3",
+                                   "X3"= "DS4/5"))+
+  scale_linetype_manual(name = "Model",
+                        values = c("grey"=4,
+                                   "tile"=1),
+                        labels = c("grey"="Interpolation",
+                                   "tile"="Inverison"))
+
+# create density plots of the hazard intensity metrics to visualise how far beyond the data the fragility curves have been extrapolated
+
+data.int <- raw_data %>%
+  dplyr::rename(him = "load_int") # interpolation
+
+data.inv <- raw_data %>%
+  dplyr::rename(him = "load_inv") # interpolation
+
+int <- ggplot(data.int)+
+  geom_density(aes(x = him),colour='grey',fill='grey')+
+  xlab("Loading (kg/m2)")+
+  ylab("Count")+
+  xlim(0,600)+
+  theme_void()
+
+inv <- ggplot(data.inv)+
+  geom_density(aes(x = him),colour='grey',fill='grey')+
+  xlab("Loading (kg/m2)")+
+  ylab("Count")+
+  xlim(0,600)+
+  theme_void()
+
+cowplot::plot_grid(int,inv,FCall,nrow = 3, align = 'v', axis = 'lr', rel_heights = c(1,1,10))
+
+```
+# Part 4: calculate exact and weited prediction accuracy of curves
+
+# K-fold cross validation function for exact accuracy
+```{r}
+#install.packages("caret")
+library(caret) # needed for confusionMatrix 
+
+exact.accuracy <- function(d.f, K){ # function takes a damage data df and K splits 
+  
+  d.f$index <- sample(nrow(data)) # add new column with unique index number (from 1-nrow()) to each cell in random order 
+  d.f <- arrange(d.f,index) # arrange all rows according to the index in ascending order to shuffle the rows
+  d.f$loghim <- log(d.f$him)
+  d.f$ds <- as.ordered(d.f$ds)
+  
+  n = (nrow(d.f)) # calculate number of rows in d.f
+  groups = cut(1:n,K,labels=F) # select K to split data into similar
+                              # or equal sized groups
+  
+  K_matrix <- matrix(nrow =K, ncol = 1) # matix to store K model accuracy scores
+  
+  for(i in 1:K){
+    test_groups <- which(groups==i,arr.ind=TRUE)
+    testData <- d.f[test_groups, ]
+    trainData <- d.f[-test_groups, ]
+  
+    
+    trainData$ds <- as.ordered(trainData$ds)
+    
+    clmmod <- clm(ds ~ loghim, 
+                  data=trainData, 
+                  link="probit")
+    
+    #rename "ds" to "dso" (observed) so predict() returns multiple probabilities
+    #otherwise predict() will output the probabiity of each row's ds being observed at each row's hazard intensity
+    testData <- testData %>% dplyr::rename(dso=ds)
+     
+    pred.test <- predict(clmmod,newdata=testData, type="cum.prob")
+    pred.test <- 1-pred.test$cprob2[,2:4]
+    p.error <- data.frame(testData,pred.test)
+    p.error$rand <-  runif(nrow(p.error), min = 0, max = 1) # add random number for ds classification
+    
+    for (j in 1: nrow(p.error)){ #for loop to classify a discrete damage state
+      if(p.error$X3[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "3"} else {
+      if(p.error$X2[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "2"} else {
+      if(p.error$X1[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "1"} else {
+      p.error$dsp[j] <- "0"
+      }}}} 
+    
+    p.error$dsp <- as.factor(p.error$dsp)
+    cm <-  caret::confusionMatrix(data = p.error$dsp, reference = p.error$dso)
+    
+    K_matrix[i,] <-(as.numeric((cm$overall["Accuracy"])))
+  }
+  return(K_matrix)
+} 
+```
+
+# K-fold cross validation function for penalised/weighted accuracy
+```{r}
+#install.packages("caret")
+library(caret) # needed for confusionMatrix 
+
+weighted.accuracy <- function(d.f, K){ # function takes a damage data df and K splits 
+  
+  d.f$index <- sample(nrow(data)) # add new column with unique index number (from 1-nrow()) to each cell in random order 
+  d.f <- arrange(d.f,index) # arrange all rows according to the index in ascending order to shuffle the rows
+  d.f$loghim <- log(d.f$him)
+  d.f$ds <- as.ordered(d.f$ds)
+  
+  n = (nrow(d.f)) # calculate number of rows in d.f
+  groups = cut(1:n,K,labels=F) # select K to split data into similar
+                              # or equal sized groups
+  
+  K_matrix <- matrix(nrow =K, ncol = 1) # matix to store K model accuracy scores
+  
+  for(i in 1:K){
+    test_groups <- which(groups==i,arr.ind=TRUE)
+    testData <- d.f[test_groups, ]
+    trainData <- d.f[-test_groups, ]
+  
+    
+    trainData$ds <- as.ordered(trainData$ds)
+    
+    clmmod <- clm(ds ~ loghim, 
+                  data=trainData, 
+                  link="probit")
+    
+    #rename "ds" to "dso" (damage state observed) so predict() returns multiple probabilities
+    #otherwise predict() will output the probabiity of each row's ds being observed at each row's hazard intensity
+    testData <- testData %>% dplyr::rename(dso=ds)
+     
+    pred.test <- predict(clmmod,newdata=testData, type="cum.prob")
+    pred.test <- 1-pred.test$cprob2[,2:4]
+    p.error <- data.frame(testData,pred.test)
+    p.error$rand <-  runif(nrow(p.error), min = 0, max = 1) # add random number for ds classification
+    
+    for (j in 1: nrow(p.error)){ #for loop to classify a discrete damage state
+      if(p.error$X3[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "3"} else {
+      if(p.error$X2[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "2"} else {
+      if(p.error$X1[j] > p.error$rand[j]) {  
+    p.error$dsp[j] <- "1"} else {
+      p.error$dsp[j] <- "0"
+      }}}} 
+    
+    p.error$dsp <- as.factor(p.error$dsp)
+    cm <- confusionMatrix(data = p.error$dsp, reference = p.error$dso)
+    cm.t <- cm$table
+    
+    w.acc.0 <- (sum(1* diag(cm.t))/sum(cm.t)) # ds exactly classified
+    w.acc.1 <- (1-(1/3))*sum(cm.t[1,2],cm.t[2,3],cm.t[3,4],cm.t[2,1],cm.t[3,2],cm.t[4,3])/sum(cm.t) 
+    w.acc.2 <- (1-(2/3))*sum(cm.t[3,1],cm.t[4,2],cm.t[1,3],cm.t[2,4])/sum(cm.t) #ds misclassified by 2 levels
+    w.acc.3 <- (1-(3/3))*(sum(cm.t[4,1], cm.t[1,4])*3/3)/sum(cm.t) #ds misclassified by 3 levels --> zero accuracy
+    w.acc.total <- w.acc.0+w.acc.1+w.acc.2 # sum scores from all classifications
+    
+    K_matrix[i,] <-(as.numeric(w.acc.total))
+  }
+  return(K_matrix)
+} 
+```
+
+# select and prepare data for accuracy testing
+```{r}
+raw_data <- read.csv("https://raw.githubusercontent.com/flying-rock/kelud14/master/assessed_damage.csv")
+
+# make use different hazard intensities
+data <- raw_data %>%
+  dplyr::rename(him = "load_inv") # Inversion
+
+# data <- raw_data %>%
+#   dplyr::rename(him = "load_int") # Interpolation
+
+# filter in buildings of different typologies
+data <- data %>%
+  dplyr::filter(pre == 1 | Pre == 0) # Tile
+
+# data <- data %>%
+#  dplyr::filter(pre == 2) # 'Grey'
+
+```
+
+#iterate K-fold cross validation multiple times until the overall average of all iterations becomes stable
+#exact accuracy
+```{r}
+ea <- as.data.frame(exact.accuracy(data,5))
+print("Exact accuracy for this iteration is") 
+mean(ea[,1]) # see the average accuracy of the K groups
+
+# "append = TRUE" appends results of newly sampled cross validation onto the end of the old ones 
+# so overall average from numerous iterations can be calculated
+write_csv(pa, "accuracy/exact.accuracy.csv", append = TRUE) 
+
+```
+
+#weighted accuracy
+```{r}
+wa <- as.data.frame(weighted.accuracy(data,5))
+print("Weighted accuracy for this iteration is") 
+mean(wa[,1]) # see the average accuracy of the K groups
+
+# "append = TRUE" appends results of newly sampled cross validation onto the end of the old ones 
+# so overall average from numerous iterations can be calculated
+write_csv(wa, "accuracy/weighted.accuracy.csv", append = TRUE) 
+
+```
